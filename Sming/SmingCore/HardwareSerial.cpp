@@ -33,7 +33,7 @@ HardwareSerial::HardwareSerial(const int uartPort)
 	system_os_task(delegateTask,USER_TASK_PRIO_0,serialQueue,SERIAL_QUEUE_LEN);
 }
 
-void HardwareSerial::begin(const uint32_t baud/* = 9600*/)
+void HardwareSerial::begin(const uint32_t baud/* = 9600*/, const int txEnablePin /* = -1 */)
 {
 	//TODO: Move to params!
 	UartDev.baut_rate = (UartBautRate)baud;
@@ -41,6 +41,13 @@ void HardwareSerial::begin(const uint32_t baud/* = 9600*/)
 	UartDev.exist_parity = STICK_PARITY_DIS;
 	UartDev.stop_bits = ONE_STOP_BIT;
 	UartDev.data_bits = EIGHT_BITS;
+
+	memberData[uart].txEnablePin = txEnablePin;
+	if (txEnablePin >= 0) {
+		gpio_output_set(0, 0, txEnablePin, 0);
+		int tx_char_time = 8 * 1000000 / baud; // assumes 8 bits per character
+		memberData[uart].txEnableTimer.initializeUs(tx_char_time, TimerDelegate(&HardwareSerial::tx_completed_intr, this));
+	}
 
 	ETS_UART_INTR_ATTACH((void*)uart0_rx_intr_handler,  &(UartDev.rcv_buff));
 	PIN_PULLUP_DIS(PERIPHS_IO_MUX_U0TXD_U);
@@ -58,8 +65,12 @@ void HardwareSerial::begin(const uint32_t baud/* = 9600*/)
 	SET_PERI_REG_MASK(UART_CONF0(uart), UART_RXFIFO_RST | UART_TXFIFO_RST);
 	CLEAR_PERI_REG_MASK(UART_CONF0(uart), UART_RXFIFO_RST | UART_TXFIFO_RST);
 
+	uint32_t uart_config_bits = 0;
+	if (txEnablePin)
+		uart_config_bits |= (0 & UART_TXFIFO_EMPTY_THRHD) << UART_TXFIFO_EMPTY_THRHD_S | UART_TXFIFO_EMPTY_INT_ENA;
 	//set rx fifo trigger
-	WRITE_PERI_REG(UART_CONF1(uart), (UartDev.rcv_buff.TrigLvl & UART_RXFIFO_FULL_THRHD) << UART_RXFIFO_FULL_THRHD_S);
+	uart_config_bits |= (UartDev.rcv_buff.TrigLvl & UART_RXFIFO_FULL_THRHD) << UART_RXFIFO_FULL_THRHD_S;
+	WRITE_PERI_REG(UART_CONF1(uart), uart_config_bits);
 
 	//clear all interrupt
 	WRITE_PERI_REG(UART_INT_CLR(uart), 0xffff);
@@ -71,10 +82,21 @@ void HardwareSerial::begin(const uint32_t baud/* = 9600*/)
 	Serial.println("\r\n"); // after SPAM :)
 }
 
+void HardwareSerial::tx_completed_intr()
+{
+	if (memberData[uart].txEnablePin >= 0) {
+		GPIO_OUTPUT_SET(memberData[uart].txEnablePin, 0);
+	}
+}
+
 size_t HardwareSerial::write(uint8_t oneChar)
 {
 	//if (oneChar == '\0') return 0;
-
+	if (memberData[uart].txEnablePin >= 0) {
+		memberData[uart].txEnableTimer.stop();
+		//disarm a possibly pending timer
+		GPIO_OUTPUT_SET(memberData[uart].txEnablePin, 1);
+	}
 	uart_tx_one_char(oneChar);
 
 	return 1;
@@ -205,7 +227,12 @@ void HardwareSerial::uart0_rx_intr_handler(void *para)
     RcvMsgBuff *pRxBuff = (RcvMsgBuff *)para;
     uint8 RcvChar;
 
-    if (UART_RXFIFO_FULL_INT_ST != (READ_PERI_REG(UART_INT_ST(UART_ID_0)) & UART_RXFIFO_FULL_INT_ST))
+    if (UART_TXFIFO_EMPTY_INT_ST == (READ_PERI_REG(UART_INT_ST(UART_ID_0)) & UART_TXFIFO_EMPTY_INT_ST)) {
+	if (0 != UartDev.baut_rate && memberData[UART_ID_0].txEnablePin >=0) {
+		memberData[UART_ID_0].txEnableTimer.start();
+	}
+    }
+    else if (UART_RXFIFO_FULL_INT_ST != (READ_PERI_REG(UART_INT_ST(UART_ID_0)) & UART_RXFIFO_FULL_INT_ST))
         return;
 
     WRITE_PERI_REG(UART_INT_CLR(UART_ID_0), UART_RXFIFO_FULL_INT_CLR);

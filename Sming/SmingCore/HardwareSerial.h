@@ -15,6 +15,7 @@
 #include "../Wiring/WiringFrameworkDependencies.h"
 #include "../Wiring/Stream.h"
 #include "../SmingCore/Delegate.h"
+#include "../SmingCore/Timer.h"
 #include "../Services/CommandProcessing/CommandProcessingIncludes.h"
 
 #define UART_ID_0   0
@@ -37,6 +38,8 @@ typedef struct
 	StreamDataReceivedDelegate HWSDelegate;
 	bool useRxBuff;
 	CommandExecutor* commandExecutor = nullptr;
+	int txEnablePin;
+	Timer txEnableTimer;
 } HWSerialMemberData;
 
 class HardwareSerial : public Stream
@@ -55,6 +58,7 @@ public:
      *  @param  baud BAUD rate of the serial port (Default: 9600)
      */
 	void begin(const uint32_t baud = 9600);
+	void begin(const uint32_t baud = 9600, const int txEnablePin = -1);
 
     /** @brief  Get quantity characters available from serial input
      *  @retval int Quantity of characters in receive buffer
@@ -116,6 +120,7 @@ public:
 	/** @brief  Remove handler for received data
 	 */
 	void resetCallback();
+	void txEnable(bool state);
 
     /** @brief  Interrupt handler for UART0 receive events
      *  @todo   Should HardwareSerial::uart0_rx_intr_handler be private?
@@ -133,6 +138,7 @@ private:
 	static HWSerialMemberData memberData[NUMBER_UARTS];
 
 	os_event_t * serialQueue;
+	void tx_completed_intr();
 };
 
 /**	@brief	Global instance of serial port UART0
